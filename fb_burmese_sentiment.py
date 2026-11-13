@@ -42,6 +42,13 @@ KEYWORD_VARIANTS = {
         "J-track",
         "EJU",
         "JLPT",
+        # positive-leaning searches: success stories and congratulations
+        "ဂျပန် တက္ကသိုလ် အောင်မြင်",
+        "ဂျပန် တက္ကသိုလ် ဝင်ခွင့်ရ",
+        "ဂျပန် တက္ကသိုလ် ဂုဏ်ယူပါတယ်",
+        "ဂျပန် ကျောင်း ပျော်",
+        "JLPT အောင်",
+        "EJU အောင်",
     ],
     "ဂျပန်ပညာသင်ဆု": [
         "ဂျပန်ပညာသင်ဆု",
@@ -49,23 +56,53 @@ KEYWORD_VARIANTS = {
         "ဂျပန် ပညာသင်ဆု လျှောက်",
         "scholarship",
         "MEXT",
+        # positive-leaning searches: success stories and congratulations
+        "ပညာသင်ဆု ရရှိ",
+        "ပညာသင်ဆု ရရှိခဲ့",
+        "ပညာသင်ဆု ဂုဏ်ယူပါတယ်",
+        "ပညာသင်ဆု ဝမ်းသာ",
+        "MEXT ရရှိ",
+        "MEXT အောင်",
     ],
 }
 
 # ---------------------------
 # Myanmar sentiment lexicon WITH LEVELS
 # ---------------------------
+# Higher level = stronger. A word directly after မ is flipped
+# (ကောင်း = good -> မကောင်း = not good), so negated positives are rejected.
 POS_WORDS = {
-    3: ["ရရှိခဲ့"],
-    2: ["ဖော်ရွေ", "မွေ့လျော်"],
-    1: ["ချစ်"],
+    3: [
+        "ရရှိခဲ့", "အောင်မြင်", "ဂုဏ်ယူ", "ဂုဏ်ပြု", "ဝမ်းသာ", "ဝမ်းမြောက်",
+        "ပျော်ရွှင်", "ပီတိ", "အရမ်းကောင်း", "အကောင်းဆုံး", "ကံကောင်း",
+        "ထူးချွန်", "အားကျ", "Congrat", "congrat",
+    ],
+    2: [
+        "ပျော်", "ကောင်း", "ကျေနပ်", "ကျေးဇူးတင်", "ကျေးဇူးအများကြီး", "သဘောကျ",
+        "ကြိုက်", "အားပေး", "ဖော်ရွေ", "မွေ့လျော်", "သဘောကောင်း", "လှပ",
+        "အဆင်ပြေ", "ချောမွေ့", "တန်ဖိုးရှိ", "အသုံးဝင်", "ထိုက်တန်",
+        "စိတ်ချ", "ယုံကြည်", "လိမ်မာ",
+    ],
+    1: [
+        "ချစ်", "စိတ်ဝင်စား", "ဆုတောင်း", "အားရ",
+        "❤", "❤️", "😍", "🥰", "👍", "👏", "🎉", "💕", "😊", "🥳",
+    ],
 }
 
+# Only used to REJECT text: anything containing one of these is not saved.
 NEG_WORDS = {
-    3: ["စိတ်မပါ"],
-    2: ["ဝမ်းနည်း"],
-    1: ["ညံ့", "မရ"],  # "မရ" only counts as a whole syllable (not မရေ / မရော / မရှိ)
+    3: ["စိတ်မပါ", "စိတ်ပျက်", "လိမ်လည်", "လိမ်", "ကျရှုံး", "မုန်း"],
+    2: ["ဝမ်းနည်း", "ဆိုး", "စိတ်ညစ်", "ရှုံး", "ဒေါသ", "😡", "😢", "😭", "👎"],
+    1: ["ညံ့", "မရ", "ခက်ခဲ", "ပင်ပန်း", "စိုးရိမ်", "ပူပန်"],
+    # "မရ" only counts as a whole syllable (not မရေ / မရော / မရှိ)
 }
+
+# Facebook text is NFC-normalized in clean_text(), so the lexicon must be too.
+POS_WORDS = {lv: [unicodedata.normalize("NFC", w) for w in ws] for lv, ws in POS_WORDS.items()}
+NEG_WORDS = {lv: [unicodedata.normalize("NFC", w) for w in ws] for lv, ws in NEG_WORDS.items()}
+
+# Questions ("ကောင်းလား" = is it good?) aren't positive statements.
+QUESTION_RE = re.compile(r"[?？]|လား")
 
 NEGATOR = "မ"  # a word directly preceded by မ flips polarity (မချစ် = don't like)
 
@@ -220,14 +257,10 @@ def find_sentiment(text: str):
     pos_level, pos_hits = result["positive"]
     neg_level, neg_hits = result["negative"]
 
-    if pos_hits and neg_hits:
-        if neg_level >= pos_level:
-            return "negative", neg_level, neg_hits
-        return "positive", pos_level, pos_hits
+    if neg_hits:  # any negative word (incl. negated positives) -> not positive
+        return "negative", neg_level, neg_hits
     if pos_hits:
         return "positive", pos_level, pos_hits
-    if neg_hits:
-        return "negative", neg_level, neg_hits
     return None, None, []
 
 
@@ -380,11 +413,13 @@ def extract_posts(main_kw, variant_kw, post_set, out_list) -> int:
             continue
         if has_any_link_left(text) or not is_burmese_only(text) or looks_zawgyi(text):
             continue
+        if QUESTION_RE.search(text):
+            continue
         key = (main_kw, text)
         if key in post_set:
             continue
         label, level, matched = find_sentiment(text)
-        if label != "positive":  # keep positive only (mixed text where negative wins is dropped)
+        if label != "positive":  # positive only; any negative word rejects the text
             continue
         post_set.add(key)
         out_list.append(build_row(main_kw, variant_kw, text, label, level, matched, "post"))
@@ -407,13 +442,13 @@ def extract_comments(main_kw, variant_kw, comment_set, out_list) -> int:
             continue
         if has_any_link_left(text) or not is_burmese_only(text) or looks_zawgyi(text):
             continue
-        if is_low_value_comment(text):
+        if is_low_value_comment(text) or QUESTION_RE.search(text):
             continue
         key = (main_kw, text)
         if key in comment_set:
             continue
         label, level, matched = find_sentiment(text)
-        if label != "positive":  # keep positive only (mixed text where negative wins is dropped)
+        if label != "positive":  # positive only; any negative word rejects the text
             continue
         comment_set.add(key)
         out_list.append(build_row(main_kw, variant_kw, text, label, level, matched, "comment"))
