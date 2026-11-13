@@ -89,7 +89,8 @@ POS_WORDS = {
     ],
 }
 
-# Only used to REJECT text: anything containing one of these is not saved.
+# Only used to REJECT text: a negative word as strong as (or stronger than)
+# the strongest positive word means the text is not saved.
 NEG_WORDS = {
     3: ["စိတ်မပါ", "စိတ်ပျက်", "လိမ်လည်", "လိမ်", "ကျရှုံး", "မုန်း"],
     2: ["ဝမ်းနည်း", "ဆိုး", "စိတ်ညစ်", "ရှုံး", "ဒေါသ", "😡", "😢", "😭", "👎"],
@@ -257,10 +258,13 @@ def find_sentiment(text: str):
     pos_level, pos_hits = result["positive"]
     neg_level, neg_hits = result["negative"]
 
-    if neg_hits:  # any negative word (incl. negated positives) -> not positive
-        return "negative", neg_level, neg_hits
-    if pos_hits:
+    # Mixed text counts as positive only when the positive side is stronger:
+    # "ခက်ခဲပေမဲ့ အောင်မြင်ခဲ့" (hard, but succeeded: 1 vs 3) -> positive
+    # "ကောင်းပေမဲ့ စိတ်ပျက်" (good, but disappointed: 2 vs 3) -> negative
+    if pos_hits and pos_level > neg_level:
         return "positive", pos_level, pos_hits
+    if neg_hits:
+        return "negative", neg_level, neg_hits
     return None, None, []
 
 
@@ -419,7 +423,7 @@ def extract_posts(main_kw, variant_kw, post_set, out_list) -> int:
         if key in post_set:
             continue
         label, level, matched = find_sentiment(text)
-        if label != "positive":  # positive only; any negative word rejects the text
+        if label != "positive":  # positive only; a strong-enough negative word rejects the text
             continue
         post_set.add(key)
         out_list.append(build_row(main_kw, variant_kw, text, label, level, matched, "post"))
@@ -448,7 +452,7 @@ def extract_comments(main_kw, variant_kw, comment_set, out_list) -> int:
         if key in comment_set:
             continue
         label, level, matched = find_sentiment(text)
-        if label != "positive":  # positive only; any negative word rejects the text
+        if label != "positive":  # positive only; a strong-enough negative word rejects the text
             continue
         comment_set.add(key)
         out_list.append(build_row(main_kw, variant_kw, text, label, level, matched, "comment"))
