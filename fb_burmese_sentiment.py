@@ -70,22 +70,22 @@ KEYWORD_VARIANTS = {
 # ---------------------------
 # Myanmar sentiment lexicon WITH LEVELS
 # ---------------------------
-# Higher level = stronger. A word directly after မ is flipped
-# (ကောင်း = good -> မကောင်း = not good), so negated positives are rejected.
+# FEELING words only. Words like ကောင်း / အောင်မြင် / ရရှိခဲ့ / အဆင်ပြေ / အကောင်းဆုံး are
+# left out on purpose: they appear all the time in neutral news, ads and advice.
+# Higher level = stronger. A word directly after မ is flipped (ကြိုက် -> မကြိုက်).
 POS_WORDS = {
     3: [
-        "ရရှိခဲ့", "အောင်မြင်", "ဂုဏ်ယူ", "ဂုဏ်ပြု", "ဝမ်းသာ", "ဝမ်းမြောက်",
-        "ပျော်ရွှင်", "ပီတိ", "အရမ်းကောင်း", "အကောင်းဆုံး", "ကံကောင်း",
-        "ထူးချွန်", "အားကျ", "Congrat", "congrat",
+        "ဂုဏ်ယူ", "ဝမ်းသာ", "ဝမ်းမြောက်", "ပျော်ရွှင်", "ပီတိ", "အားကျ",
+        "Congrat", "congrat", "ချီးကျူး",
     ],
     2: [
-        "ပျော်", "ကောင်း", "ကျေနပ်", "ကျေးဇူးတင်", "ကျေးဇူးအများကြီး", "သဘောကျ",
-        "ကြိုက်", "အားပေး", "ဖော်ရွေ", "မွေ့လျော်", "သဘောကောင်း", "လှပ",
-        "အဆင်ပြေ", "ချောမွေ့", "တန်ဖိုးရှိ", "အသုံးဝင်", "ထိုက်တန်",
-        "စိတ်ချ", "ယုံကြည်", "လိမ်မာ",
+        "ပျော်", "ကြိုက်", "သဘောကျ", "ကျေးဇူးတင်", "ကျေးဇူးအများကြီး", "ကျေနပ်",
+        "အရမ်းကောင်း", "တော်လိုက်တာ", "လှလိုက်တာ", "ကောင်းလိုက်တာ",
+        # good wishes, very common in congratulation comments
+        "အောင်မြင်ပါစေ", "အဆင်ပြေပါစေ", "ကံကောင်းပါစေ", "အောင်မြင်ပြီး",
     ],
     1: [
-        "ချစ်", "စိတ်ဝင်စား", "ဆုတောင်း", "အားရ",
+        "ချစ်", "ဆုတောင်း", "အားပေး",
         "❤", "❤️", "😍", "🥰", "👍", "👏", "🎉", "💕", "😊", "🥳",
     ],
 }
@@ -93,8 +93,8 @@ POS_WORDS = {
 # Only used to REJECT text: a negative word as strong as (or stronger than)
 # the strongest positive word means the text is not saved.
 NEG_WORDS = {
-    3: ["စိတ်မပါ", "စိတ်ပျက်", "လိမ်လည်", "လိမ်", "ကျရှုံး", "မုန်း"],
-    2: ["ဝမ်းနည်း", "ဆိုး", "စိတ်ညစ်", "ရှုံး", "ဒေါသ", "အဆင်မပြေ", "😡", "😢", "😭", "👎"],
+    3: ["စိတ်မပါ", "စိတ်ပျက်", "လိမ်လည်", "လိမ်", "ကျရှုံး", "မုန်း", "မအောင်"],
+    2: ["ဝမ်းနည်း", "ဆိုး", "စိတ်ညစ်", "ရှုံး", "ဒေါသ", "အဆင်မပြေ", "မကောင်း", "😡", "😢", "😭", "👎"],
     1: ["ညံ့", "မရ", "ခက်ခဲ", "ပင်ပန်း", "စိုးရိမ်", "ပူပန်"],
     # "မရ" only counts as a whole syllable (not မရေ / မရော / မရှိ)
 }
@@ -143,6 +143,9 @@ MAX_SLEEP = 1.2
 
 MIN_POST_LEN = 1
 MIN_COMMENT_LEN = 1
+# Long texts are almost always news, ads or guides (neutral). Short ones carry the feeling.
+MAX_POST_LEN = 200      # posts longer than this are skipped (None = no limit)
+MAX_COMMENT_LEN = 300   # comments longer than this are skipped (None = no limit)
 MAX_LATIN_RATIO = 0.25  # lets posts with EJU / JLPT / MEXT through
 
 # Skip advertising posts (schools/agencies with phone numbers, "contact us", "register").
@@ -231,9 +234,16 @@ def looks_zawgyi(text: str) -> bool:
 # ---------------------------
 # BURMESE FILTER
 # ---------------------------
+# English words that are normal in Burmese posts; they don't count against the Burmese ratio
+ALLOWED_LATIN_RE = re.compile(
+    r"\b(congratulations?|congrats?|fighting|eju|jlpt|mext|scholarship|university|uni)\b",
+    re.IGNORECASE)
+
+
 def is_burmese_only(text: str) -> bool:
     if not text or JP_CHAR_RE.search(text):
         return False
+    text = ALLOWED_LATIN_RE.sub(" ", text)
     # Count letters, marks and digits (Burmese vowel signs are marks, not \w)
     chars = [c for c in text if unicodedata.category(c)[0] in "LMN"]
     if not chars:
@@ -465,7 +475,7 @@ def extract_posts(main_kw, variant_kw, post_set, out_list) -> int:
     added = 0
     for body, rest in items:
         text = clean_text(body)
-        if len(text) < MIN_POST_LEN:
+        if len(text) < MIN_POST_LEN or (MAX_POST_LEN and len(text) > MAX_POST_LEN):
             continue
         rest_low = (rest or "").lower()
         if any(w.lower() in rest_low for w in SPONSORED_WORDS):
@@ -499,7 +509,7 @@ def extract_comments(main_kw, variant_kw, comment_set, out_list) -> int:
         if not raw or raw.lower() in UI_LABELS:
             continue
         text = clean_text(raw)
-        if len(text) < MIN_COMMENT_LEN:
+        if len(text) < MIN_COMMENT_LEN or (MAX_COMMENT_LEN and len(text) > MAX_COMMENT_LEN):
             continue
         if has_any_link_left(text) or not is_burmese_only(text) or looks_zawgyi(text):
             continue
