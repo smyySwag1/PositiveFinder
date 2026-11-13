@@ -1,0 +1,12 @@
+# Browser profile holds your Facebook login cookies - never upload it
+selenium_profile/
+
+# Driver binary and scraped output
+chromedriver.exe
+*.csv
+
+# Python / PyCharm
+__pycache__/
+.venv/
+venv/
+.idea/workspace.xml
