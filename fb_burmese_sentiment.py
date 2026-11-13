@@ -7,7 +7,8 @@ import urllib.parse
 
 import pandas as pd
 from selenium import webdriver
-from selenium.common.exceptions import StaleElementReferenceException, WebDriverException
+from selenium.common.exceptions import (StaleElementReferenceException, TimeoutException,
+                                        WebDriverException)
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
@@ -144,6 +145,10 @@ MIN_POST_LEN = 1
 MIN_COMMENT_LEN = 1
 MAX_LATIN_RATIO = 0.25  # lets posts with EJU / JLPT / MEXT through
 
+# Skip advertising posts (schools/agencies with phone numbers, "contact us", "register").
+# They use friendly words but aren't real opinions. Set False to keep them.
+SKIP_PROMOTIONS = True
+
 # ---------------------------
 # CLEANING / FILTERS
 # ---------------------------
@@ -153,6 +158,7 @@ HASHTAG_RE = re.compile(r"#\S+")
 MENTION_RE = re.compile(r"@\w+")
 ZERO_WIDTH_RE = re.compile(r"[\u200B-\u200D\u2060\uFEFF\u00AD]")
 WS_RE = re.compile(r"\s+")
+SEE_MORE_RE = re.compile(r"(…|\.\.\.)?\s*\b(See more|See less|See original|See translation)\b", re.IGNORECASE)
 
 JP_CHAR_RE = re.compile(r"[\u3040-\u30FF\u3400-\u4DBF\u4E00-\u9FFF\uFF00-\uFFEF]")
 
@@ -187,7 +193,27 @@ def clean_text(text: str) -> str:
     t = URL_RE.sub(" ", t)
     t = HASHTAG_RE.sub(" ", t)
     t = MENTION_RE.sub(" ", t)
+    t = SEE_MORE_RE.sub(" ", t)
     return WS_RE.sub(" ", t).strip()
+
+
+def dedup_key(main_kw, text):
+    # The start of the text, so a cut-off copy and the full post count as the same post
+    return main_kw, re.sub(r"\W+", "", text)[:80]
+
+
+PHONE_RE = re.compile(r"(\+?95|\b0)\s?9[\d\s-]{7,12}\d|[၀၉][၀-၉\s-]{7,12}[၀-၉]")
+PROMO_WORDS = [
+    "စုံစမ်း", "စာရင်းပေးသွင်း", "စာရင်းသွင်း", "ဆက်သွယ်", "ဖိတ်ခေါ်", "သင်တန်းကြေး",
+    "Messenger", "Viber", "Telegram", "Register", "Intake", "Seminar", "Webinar",
+]
+
+
+def is_promotion(text: str) -> bool:
+    if PHONE_RE.search(text):
+        return True
+    low = text.lower()
+    return sum(w.lower() in low for w in PROMO_WORDS) >= 2  # one word alone can be innocent
 
 
 def has_any_link_left(text: str) -> bool:
@@ -234,7 +260,12 @@ def _occurrences(text: str, word: str):
         if i == -1:
             return
         end = i + len(word)
-        ends_ok = end >= len(text) or not _is_mark(text[end])   # not cut mid-syllable
+        # Not cut mid-syllable: the next char must not be a vowel sign/mark, and must not be
+        # a final consonant (consonant + ် or stacked ္), e.g. အားကျ inside အားကျင်းပ
+        ends_ok = end >= len(text) or not (
+            _is_mark(text[end])
+            or (end + 1 < len(text) and text[end + 1] in "\u103A\u1039")
+        )
         starts_ok = i == 0 or text[i - 1] != "\u1039"            # not a stacked consonant
         if ends_ok and starts_ok:
             yield i
@@ -311,6 +342,17 @@ return Array.from(document.querySelectorAll(
   "a[href*='/posts/'], a[href*='permalink.php'], a[href*='story.php']"
 )).map(a => a.href);
 """
+
+
+def open_page(url):
+    """Open a page without hanging: Facebook pages never fully finish loading."""
+    try:
+        driver.get(url)
+    except TimeoutException:
+        try:
+            driver.execute_script("window.stop();")  # use whatever has loaded so far
+        except WebDriverException:
+            pass
 
 
 def normalize_post_url(href: str) -> str:
@@ -432,7 +474,9 @@ def extract_posts(main_kw, variant_kw, post_set, out_list) -> int:
             continue
         if QUESTION_RE.search(text):
             continue
-        key = (main_kw, text)
+        if SKIP_PROMOTIONS and is_promotion(text):
+            continue
+        key = dedup_key(main_kw, text)
         if key in post_set:
             continue
         label, level, matched = find_sentiment(text)
@@ -461,7 +505,7 @@ def extract_comments(main_kw, variant_kw, comment_set, out_list) -> int:
             continue
         if is_low_value_comment(text) or QUESTION_RE.search(text):
             continue
-        key = (main_kw, text)
+        key = dedup_key(main_kw, text)
         if key in comment_set:
             continue
         label, level, matched = find_sentiment(text)
@@ -490,9 +534,9 @@ def save(all_posts, all_comments):
 # MAIN
 # ---------------------------
 def collect_from_post(link, main_kw, vkw, post_set, comment_set, all_posts, all_comments):
-    driver.get(link)
+    open_page(link)
     wait.until(EC.presence_of_element_located((By.TAG_NAME, "body")))
-    time.sleep(1.6)
+    time.sleep(2.5)  # give comments time to appear
     click_see_more()
     extract_posts(main_kw, vkw, post_set, all_posts)  # full post text lives here, not truncated
 
@@ -519,7 +563,7 @@ def main():
 
             for vkw in variants:
                 print(f"\nSearch variant: {vkw}")
-                driver.get(f"https://www.facebook.com/search/posts?q={urllib.parse.quote(vkw)}")
+                open_page(f"https://www.facebook.com/search/posts?q={urllib.parse.quote(vkw)}")
                 wait.until(EC.presence_of_element_located((By.TAG_NAME, "body")))
                 time.sleep(2.5)
 
@@ -540,10 +584,13 @@ def main():
                     try:
                         collect_from_post(link, main_kw, vkw, post_set, comment_set,
                                           all_posts, all_comments)
-                    except WebDriverException as e:
-                        print(f"  skipped {link}: {type(e).__name__}")
+                    except TargetReached:
+                        raise
+                    except Exception as e:  # one bad post must not end the whole run
+                        print(f"  skipped a post: {type(e).__name__}")
                     sleep_human(0.4, 0.9)
 
+                print(f"  opened {min(len(found_links), MAX_OPEN_POSTS_PER_VARIANT)} posts for comments")
                 save(all_posts, all_comments)  # checkpoint after every variant
                 print(f"  so far: {len(all_posts)} posts, {len(all_comments)} comments")
 
@@ -570,11 +617,13 @@ if __name__ == "__main__":
     options.add_argument("--profile-directory=SeleniumProfile")
     options.add_argument("--start-maximized")
     options.add_argument("--disable-notifications")
+    options.page_load_strategy = "eager"  # don't wait for every image/video to load
 
     if os.path.exists(CHROMEDRIVER_PATH):
         driver = webdriver.Chrome(service=Service(CHROMEDRIVER_PATH), options=options)
     else:
         driver = webdriver.Chrome(options=options)  # Selenium finds/downloads the driver
+    driver.set_page_load_timeout(30)  # well under Selenium's own 120 s connection timeout
     wait = WebDriverWait(driver, 15)
 
     driver.get("https://www.facebook.com")
