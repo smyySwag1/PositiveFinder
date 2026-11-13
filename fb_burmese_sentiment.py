@@ -125,10 +125,14 @@ COMMENTS_CSV = os.path.join(BASE_DIR, "comments_BURMESE_ONLY_POSITIVE_test3_main
 # ---------------------------
 # TUNING
 # ---------------------------
+# Stop the whole run once this many positive rows (posts + comments) are saved.
+# Set to None to collect as much as possible.
+TARGET_TOTAL = 200
+
 SEARCH_SCROLLS = 45
 MAX_OPEN_POSTS_PER_VARIANT = 18
 COMMENT_ROUNDS = 6
-MAX_COMMENTS_PER_POST = 220
+MAX_COMMENTS_PER_POST = 40  # spread rows over many posts instead of a few busy ones
 
 TARGET_POSTS_PER_MAIN = 450
 TARGET_COMMENTS_PER_MAIN = 1200
@@ -160,6 +164,15 @@ UI_LABELS = {
     "like", "reply", "share", "send", "see more", "view more", "edited", "author",
     "いいね！", "返信する", "シェア", "送信", "もっと見る", "編集済み",
 }
+
+
+class TargetReached(Exception):
+    pass
+
+
+def check_target(all_posts, all_comments):
+    if TARGET_TOTAL is not None and len(all_posts) + len(all_comments) >= TARGET_TOTAL:
+        raise TargetReached
 
 
 def sleep_human(a=MIN_SLEEP, b=MAX_SLEEP):
@@ -483,10 +496,13 @@ def collect_from_post(link, main_kw, vkw, post_set, comment_set, all_posts, all_
     click_see_more()
     extract_posts(main_kw, vkw, post_set, all_posts)  # full post text lives here, not truncated
 
+    check_target(all_posts, all_comments)
+
     per_post = 0
     for _ in range(COMMENT_ROUNDS):
         load_more_comments_round()
         per_post += extract_comments(main_kw, vkw, comment_set, all_comments)
+        check_target(all_posts, all_comments)
         if per_post >= MAX_COMMENTS_PER_POST:
             break
 
@@ -511,6 +527,7 @@ def main():
 
                 def step():
                     extract_posts(main_kw, vkw, post_set, all_posts)
+                    check_target(all_posts, all_comments)
                     for url in collect_post_links():
                         if url not in visited_links and url not in found_links:
                             found_links.append(url)
@@ -537,9 +554,12 @@ def main():
 
             print(f"Collected for {main_kw}: +{len(all_posts) - start_posts} posts, "
                   f"+{len(all_comments) - start_comments} comments")
+    except TargetReached:
+        print(f"\nReached {TARGET_TOTAL} positive rows. Stopping.")
     finally:
         save(all_posts, all_comments)  # also runs on Ctrl+C or a crash
         driver.quit()
+        print(f"Total: {len(all_posts)} posts + {len(all_comments)} comments")
         print(f"Saved: {POSTS_CSV}")
         print(f"Saved: {COMMENTS_CSV}")
 
